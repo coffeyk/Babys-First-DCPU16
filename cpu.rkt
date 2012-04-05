@@ -138,19 +138,6 @@
        (+ 1 startadr)
        (rest vals))))
 
-;(number->string (memory-read (memory-write Mem #x100 #x123456) #x100) 16)
-;(define reg2 (reg-write (reg-write Reg 7 #xbeef) 6 #xdead))
-
-;(print-register Reg)
-;(print-register reg2)
-
-(define program (list #x7c01 #x0030 #x7de1 #x1000 #x0020 #x7803 #x1000 #xc00d
-                      #x7dc1 #x001a #xa861 #x7c01 #x2000 #x2161 #x2000 #x8463
-                      #x806d #x7dc1 #x000d #x9031 #x7c10 #x0018 #x7dc1 #x001a
-                      #x9037 #x61c1 #x7dc1 #x001a #x0000))
-
-(memory-fill Mem 0 program)
-
 ; opcode format bbbbbbaaaaaaoooo
 (define (fetch-opcode hex)
   (case (bitwise-and #xf hex)
@@ -722,7 +709,7 @@
 
 ;(fetch-opcode (memory-read (memory-fill Mem 0 program) (reg-read Reg 'PC)))
 ;(reg-write Reg 'Pa 123)
-(define (step mem-reg oldpc)
+(define (run mem-reg oldpc)
   (let* ([mem (car mem-reg)]
          [reg (cdr mem-reg)]
          [pc (reg-read reg 'PC)])
@@ -733,7 +720,17 @@
                (display "\n")
                (display mem)
                (display "\n")
-               (step (parse-pc mem reg) pc)))))
+               (run (parse-pc mem reg) pc)))))
 
-(step (cons (memory-fill Mem 0 program) Reg) -1)
-;(parse-pc (memory-fill Mem 0 program) Reg)
+
+;Sample ASM code to be loaded
+(define program (list #x7c01 #x0030 #x7de1 #x1000 #x0020 #x7803 #x1000 #xc00d
+                      #x7dc1 #x001a #xa861 #x7c01 #x2000 #x2161 #x2000 #x8463
+                      #x806d #x7dc1 #x000d #x9031 #x7c10 #x0018 #x7dc1 #x001a
+                      #x9037 #x61c1 #x7dc1 #x001a #x0000))
+
+; fill memory starting at #x0 from program
+(memory-fill Mem 0 program)
+
+; execute program until PC is static
+(run (cons (memory-fill Mem 0 program) Reg) -1)
