@@ -32,13 +32,13 @@
     [(#xd) 'IFN]
     [(#xe) 'IFG]
     [(#xf) 'IFB]))
+
 ; non-basic opcode format aaaaaaoooooo0000
 (define (fetch-opcode-nonbasic hex)
   (case (bitwise-and #b111111
                      (arithmetic-shift hex -4))
     [(#x01) 'JSR]
     [else (error "Reserved opcode" hex)]))
-
 
 (define (build-op-write hex)
   (let ([i (extract-var-a hex)])
@@ -55,7 +55,6 @@
       [(in-between #x20 i #x3f) op-lit-write]
       [else (error "invalid Value")]
       )))
-
 
 ; the op-...-write functions return the final (memory . registers)
 (define (build-op-reg-write r-id)
@@ -87,42 +86,11 @@
     [(= #x1f v) 1]
     [else 0]))
 
-(define (calc-clock-nonbasic hex)
-  (let ([s (fetch-opcode-nonbasic hex)])
-    (+ (isr-size hex)
-       (case s 
-         ['JSR 1]))))
-
-(define (calc-clock hex)
-  (let ([s (fetch-opcode hex)])
-    (if (eq? 'nonbasic s)
-        (calc-clock-nonbasic hex)
-        ; clock cycles are (isr size + isr cost)
-        (+ (isr-size hex)
-           (case s 
-             ['SET 0]
-             ['ADD 1]
-             ['SUB 1]
-             ['MUL 1]
-             ['DIV 2]
-             ['MOD 2]
-             ['SHL 1]
-             ['SHR 1]
-             ['AND 0]
-             ['BOR 0]
-             ['XOR 0]
-             ['IFE 1]
-             ['IFN 1]
-             ['IFG 1]
-             ['IFB 1])
-           ))))
-
 (define (clock-cycle reg clks)
   (let ([clk (reg-read reg 'CLK)])
     (reg-write reg
                'CLK
                (+ clk clks))))
-
 
 (define (isr-size-nonbasic hex)
   (let ([vb (var-size (extract-var-b hex))]
@@ -134,248 +102,279 @@
   (let ([va (var-size (extract-var-a hex))]
         [vb (var-size (extract-var-b hex))]
         [s (fetch-opcode hex)])
-    (case s
-      ['nonbasic (isr-size-nonbasic hex)]
-      [else      (+ 1 va vb)])))
+    (if (eq? 'nonbasic s)
+        (isr-size-nonbasic hex)
+        (+ 1 
+           (var-size (extract-var-a hex))
+           (var-size (extract-var-b hex))))))
 
 (define (skip-isr hex reg)
-  (let* ([va (var-size (extract-var-a hex))]
-         [vb (var-size (extract-var-b hex))]
-         [i-size (isr-size hex)])
-    (reg-write reg 
-               'PC
-               (+ (reg-read reg 'PC) i-size))))
+  (reg-write reg 
+             'PC
+             (+ (reg-read reg 'PC) (isr-size hex))))
 
 ; 0x1: SET a, b - sets a to b
-(define (SET cycles mem reg w-func)
-  (let ([val (reg-read reg 'Pb)])
-    (w-func val
-            mem
-            (clock-cycle reg
-                         cycles))))
+(define (SET cycles w-func)
+  (define op-cycles (+ 0 cycles))
+  (lambda (mem reg)
+    (let ([val (reg-read reg 'Pb)])
+      (w-func val
+              mem
+              (clock-cycle reg
+                           cycles)))))
 
 ; 0x2: ADD a, b - sets a to a+b, sets O to 0x0001 if there's an overflow, 0x0 otherwise
-(define (ADD cycles mem reg w-func)
-  (let* ([val (+ (reg-read reg 'Pa)
-                 (reg-read reg 'Pb))]
-         [o-val (if (> val #xffff)
-                    1
-                    0)])
-    (w-func val
-            mem
-            (clock-cycle (reg-write reg 'O o-val)
-                         cycles))))
+(define (ADD cycles w-func)
+  (define op-cycles (+ 1 cycles))
+  (lambda (mem reg)
+    (let* ([val (+ (reg-read reg 'Pa)
+                   (reg-read reg 'Pb))]
+           [o-val (if (> val #xffff)
+                      1
+                      0)])
+      (w-func val
+              mem
+              (clock-cycle (reg-write reg 'O o-val)
+                           op-cycles)))))
 
 ; 0x3: SUB a, b - sets a to a-b, sets O to 0xffff if there's an underflow, 0x0 otherwise
-(define (SUB cycles mem reg w-func)
-  (let* ([pa (reg-read reg 'Pa)]
-         [pb (reg-read reg 'Pb)]
-         [val (- pa pb)]
-         [o-val (if (< val 0)
-                    #xffff
-                    0)])
-    (w-func val
-            mem
-            (clock-cycle (reg-write reg 'O o-val)
-                         cycles))))
+(define (SUB cycles w-func)
+  (define op-cycles (+ 1 cycles))
+  (lambda (mem reg)
+    (let* ([pa (reg-read reg 'Pa)]
+           [pb (reg-read reg 'Pb)]
+           [val (- pa pb)]
+           [o-val (if (< val 0)
+                      #xffff
+                      0)])
+      (w-func val
+              mem
+              (clock-cycle (reg-write reg 'O o-val)
+                           op-cycles)))))
 
 ; 0x4: MUL a, b - sets a to a*b, sets O to ((a*b)>>16)&0xffff
-(define (MUL cycles mem reg w-func)
-  (let* ([val (* (reg-read reg 'Pa)
-                 (reg-read reg 'Pb))]
-         [o-val (arithmetic-shift val -16)])
-    (w-func val 
-            mem 
-            (clock-cycle (reg-write reg 'O o-val)
-                         cycles))))
+(define (MUL cycles w-func)
+  (define op-cycles (+ 1 cycles))
+  (lambda (mem reg)
+    (let* ([val (* (reg-read reg 'Pa)
+                   (reg-read reg 'Pb))]
+           [o-val (arithmetic-shift val -16)])
+      (w-func val 
+              mem 
+              (clock-cycle (reg-write reg 'O o-val)
+                           op-cycles)))))
 
 ; 0x5: DIV a, b - sets a to a/b, sets O to ((a<<16)/b)&0xffff. if b==0, sets a and O to 0 instead.
-(define (DIV cycles mem reg w-func)
-  (let ([pa (reg-read reg 'Pa)]
-        [pb (reg-read reg 'Pb)])
-    (if (= 0 pb )
-        (w-func 0 
-                mem 
-                (clock-cycle (reg-write reg 'O 0)
-                             cycles))
-        (let ([val (/ pa pb)]
-              [o-val (/ (arithmetic-shift pa -16)
-                        pb)])
-          (w-func val 
+(define (DIV cycles w-func)
+  (define op-cycles (+ 2 cycles))
+  (lambda (mem reg)
+    (let ([pa (reg-read reg 'Pa)]
+          [pb (reg-read reg 'Pb)])
+      (if (= 0 pb )
+          (w-func 0 
                   mem 
-                  (clock-cycle (reg-write reg 'O o-val)
-                               cycles))))))
+                  (clock-cycle (reg-write reg 'O 0)
+                               op-cycles))
+          (let ([val (/ pa pb)]
+                [o-val (/ (arithmetic-shift pa -16)
+                          pb)])
+            (w-func val 
+                    mem 
+                    (clock-cycle (reg-write reg 'O o-val)
+                                 op-cycles)))))))
 
 ; 0x6: MOD a, b - sets a to a%b. if b==0, sets a to 0 instead.
-(define (MOD cycles mem reg w-func)
-  (let ([pa (reg-read reg 'Pa)]
-        [pb (reg-read reg 'Pb)])
-    (if (= 0 pb)
-        (w-func 0
-                mem
-                (clock-cycle reg
-                             cycles))
-        (let ([val (remainder (reg-read reg 'Pa)
-                              (reg-read reg 'Pb))])
-          (w-func val
+(define (MOD cycles w-func)
+  (define op-cycles (+ 2 cycles))
+  (lambda (mem reg)
+    (let ([pa (reg-read reg 'Pa)]
+          [pb (reg-read reg 'Pb)])
+      (if (= 0 pb)
+          (w-func 0
                   mem
                   (clock-cycle reg
-                               cycles))))))
+                               op-cycles))
+          (let ([val (remainder (reg-read reg 'Pa)
+                                (reg-read reg 'Pb))])
+            (w-func val
+                    mem
+                    (clock-cycle reg
+                                 op-cycles)))))))
 
 ; 0x7: SHL a, b - sets a to a<<b, sets O to ((a<<b)>>16)&0xffff
-(define (SHL cycles mem reg w-func)
-  (let* ([val (arithmetic-shift (reg-read reg 'Pa)
-                                (reg-read reg 'Pb))]
-         [o-val (arithmetic-shift val -16)])
-    (w-func val 
-            mem 
-            (clock-cycle (reg-write reg 'O o-val)
-                         cycles))))
+(define (SHL cycles w-func)
+  (define op-cycles (+ 1 cycles))
+  (lambda (mem reg)
+    (let* ([val (arithmetic-shift (reg-read reg 'Pa)
+                                  (reg-read reg 'Pb))]
+           [o-val (arithmetic-shift val -16)])
+      (w-func val 
+              mem 
+              (clock-cycle (reg-write reg 'O o-val)
+                           op-cycles)))))
 
 ; 0x8: SHR a, b - sets a to a>>b, sets O to ((a<<16)>>b)&0xffff
-(define (SHR cycles mem reg w-func)
-  (let* ([pa (reg-read reg 'Pa)]
-         [pb (reg-read reg 'Pb)]
-         [val (arithmetic-shift pa (- pb))]
-         [o-val (arithmetic-shift (arithmetic-shift pa 16)
-                                  (- pb))])
-    (w-func val 
-            mem 
-            (clock-cycle (reg-write reg 'O o-val)
-                         cycles))))
+(define (SHR cycles w-func)
+  (define op-cycles (+ 1 cycles))
+  (lambda (mem reg)
+    (let* ([pa (reg-read reg 'Pa)]
+           [pb (reg-read reg 'Pb)]
+           [val (arithmetic-shift pa (- pb))]
+           [o-val (arithmetic-shift (arithmetic-shift pa 16)
+                                    (- pb))])
+      (w-func val 
+              mem 
+              (clock-cycle (reg-write reg 'O o-val)
+                           op-cycles)))))
 
 ; 0x9: AND a, b - sets a to a&b
-(define (AND cycles mem reg w-func)
-  (let* ([val (bitwise-and (reg-read reg 'Pa)
-                           (reg-read reg 'Pb))])
-    (w-func val
-            mem
-            (clock-cycle reg
-                         cycles))))
+(define (AND cycles w-func)
+  (define op-cycles (+ 0 cycles))
+  (lambda (mem reg)
+    (let* ([val (bitwise-and (reg-read reg 'Pa)
+                             (reg-read reg 'Pb))])
+      (w-func val
+              mem
+              (clock-cycle reg
+                           op-cycles)))))
 
 ; 0xa: BOR a, b - sets a to a|b
-(define (BOR cycles mem reg w-func)
-  (let* ([val (bitwise-ior (reg-read reg 'Pa)
-                           (reg-read reg 'Pb))])
-    (w-func val
-            mem
-            (clock-cycle reg
-                         cycles))))
+(define (BOR cycles w-func)
+  (define op-cycles (+ 0 cycles))
+  (lambda (mem reg)
+    (let* ([val (bitwise-ior (reg-read reg 'Pa)
+                             (reg-read reg 'Pb))])
+      (w-func val
+              mem
+              (clock-cycle reg
+                           op-cycles)))))
 ; 0xb: XOR a, b - sets a to a^b
-(define (XOR cycles mem reg w-func)
-  (let* ([val (bitwise-xor (reg-read reg 'Pa)
-                           (reg-read reg 'Pb))])
-    (w-func val
-            mem
-            (clock-cycle reg
-                         cycles))))
+(define (XOR cycles w-func)
+  (define op-cycles (+ 0 cycles))
+  (lambda (mem reg)
+    (let* ([val (bitwise-xor (reg-read reg 'Pa)
+                             (reg-read reg 'Pb))])
+      (w-func val
+              mem
+              (clock-cycle reg
+                           op-cycles)))))
 
 ; IFE, IFN, IFG, and IFB don't make use of w-func,
 ; instead forcing a 'literal' write, which doesn't write
 ; 0xc: IFE a, b - performs next instruction only if a==b
-(define (IFE cycles mem reg w-func)
-  (let ([pa (reg-read reg 'Pa)]
-        [pb (reg-read reg 'Pb)]
-        [hex (memory-read mem
-                          (reg-read reg 'PC))])
-    (if (= pa pb)
-        (op-lit-write 0 
-                      mem 
-                      (clock-cycle reg
-                                   cycles))
-        (op-lit-write 0 
-                      mem 
-                      (clock-cycle (skip-isr hex reg)
-                                   (+ 1 cycles)))))) ; skip next instruction & values
+(define (IFE cycles w-func)
+  (define op-cycles (+ 1 cycles))
+  (lambda (mem reg)
+    (let ([pa (reg-read reg 'Pa)]
+          [pb (reg-read reg 'Pb)]
+          [hex (memory-read mem
+                            (reg-read reg 'PC))])
+      (if (= pa pb)
+          (op-lit-write 0 
+                        mem 
+                        (clock-cycle reg
+                                     op-cycles))
+          (op-lit-write 0 
+                        mem 
+                        (clock-cycle (skip-isr hex reg)
+                                     (+ 1 op-cycles))))))) ; skip next instruction & values
 ; 0xd: IFN a, b - performs next instruction only if a!=b
-(define (IFN cycles mem reg w-func)
-  (let ([pa (reg-read reg 'Pa)]
-        [pb (reg-read reg 'Pb)]
-        [hex (memory-read mem
-                          (reg-read reg 'PC))])
-    (if (= pa pb)
-        (op-lit-write 0 
-                      mem 
-                      (clock-cycle (skip-isr hex reg)
-                                   (+ 1 cycles))) ; skip next instruction & values
-        (op-lit-write 0 
-                      mem 
-                      (clock-cycle reg
-                                   cycles)))))
+(define (IFN cycles w-func)
+  (define op-cycles (+ 1 cycles))
+  (lambda (mem reg)
+    (let ([pa (reg-read reg 'Pa)]
+          [pb (reg-read reg 'Pb)]
+          [hex (memory-read mem
+                            (reg-read reg 'PC))])
+      (if (= pa pb)
+          (op-lit-write 0 
+                        mem 
+                        (clock-cycle (skip-isr hex reg)
+                                     (+ 1 op-cycles))) ; skip next instruction & values
+          (op-lit-write 0 
+                        mem 
+                        (clock-cycle reg
+                                     op-cycles))))))
 ; 0xe: IFG a, b - performs next instruction only if a>b
-(define (IFG cycles mem reg w-func)
-  (let ([pa (reg-read reg 'Pa)]
-        [pb (reg-read reg 'Pb)]
-        [hex (memory-read mem
-                          (reg-read reg 'PC))])
-    (if (> pa pb)
-        (op-lit-write 0 
-                      mem 
-                      (clock-cycle reg
-                                   cycles))
-        (op-lit-write 0 
-                      mem 
-                      (clock-cycle (skip-isr hex reg)
-                                   (+ 1 cycles)))))) ; skip next instruction & values
+(define (IFG cycles w-func)
+  (define op-cycles (+ 1 cycles))
+  (lambda (mem reg)
+    (let ([pa (reg-read reg 'Pa)]
+          [pb (reg-read reg 'Pb)]
+          [hex (memory-read mem
+                            (reg-read reg 'PC))])
+      (if (> pa pb)
+          (op-lit-write 0 
+                        mem 
+                        (clock-cycle reg
+                                     op-cycles))
+          (op-lit-write 0 
+                        mem 
+                        (clock-cycle (skip-isr hex reg)
+                                     (+ 1 op-cycles))))))) ; skip next instruction & values
 ; 0xf: IFB a, b - performs next instruction only if (a&b)!=0
-(define (IFB cycles mem reg w-func)
-  (let ([val (bitwise-and (reg-read reg 'Pa)
-                          (reg-read reg 'Pb))]
-        [hex (memory-read mem
-                          (reg-read reg 'PC))])
-    (if (= val 0)
-        (op-lit-write 0 
-                      mem 
-                      (clock-cycle (skip-isr hex reg)
-                                   (+ 1 cycles))) ; skip next instruction & values
-        (op-lit-write 0 
-                      mem 
-                      (clock-cycle reg
-                                   cycles)))))
+(define (IFB cycles w-func)
+  (define op-cycles (+ 1 cycles))
+  (lambda (mem reg)
+    (let ([val (bitwise-and (reg-read reg 'Pa)
+                            (reg-read reg 'Pb))]
+          [hex (memory-read mem
+                            (reg-read reg 'PC))])
+      (if (= val 0)
+          (op-lit-write 0 
+                        mem 
+                        (clock-cycle (skip-isr hex reg)
+                                     (+ 1 op-cycles))) ; skip next instruction & values
+          (op-lit-write 0 
+                        mem 
+                        (clock-cycle reg
+                                     op-cycles))))))
 
 
 ; 0x01 JSR a - pushes the address of the next instruction to the stack, then sets PC to a
-(define (JSR cycles mem reg)
-  (let* ([new-reg (reg-dec reg 'SP)]
-         [pc (reg-read new-reg 'PC)])
-    ((build-op-reg-write 'PC) (reg-read reg 'Pb)
-                              (memory-write mem
-                                            (reg-read new-reg 'SP)
-                                            pc)
-                              (clock-cycle new-reg
-                                           cycles))))
+(define (JSR cycles)
+  (define op-cycles (+ 1 cycles))
+  (lambda (mem reg)
+    (let* ([new-reg (reg-dec reg 'SP)]
+           [pc (reg-read new-reg 'PC)])
+      ((build-op-reg-write 'PC) (reg-read reg 'Pb)
+                                (memory-write mem
+                                              (reg-read new-reg 'SP)
+                                              pc)
+                                (clock-cycle new-reg
+                                             op-cycles)))))
 
-
-(define (call-nonbasic-hex hex mem reg)
+(define (build-call-from-nonbasic-hex hex)
   (let ([s (fetch-opcode-nonbasic hex)]
-        [cycles (calc-clock hex)])
+        [cycles (isr-size hex)])
     (display s)
     (case s
-      ['JSR (JSR cycles mem reg)])))
+      ['JSR (JSR cycles)])))
 
-(define (call-hex hex mem reg)
-  (let ([w-func (build-op-write hex)]
-        [s (fetch-opcode hex)]
-        [cycles (calc-clock hex)])
+(define (build-call-from-hex hex)
+  (let ([s (fetch-opcode hex)])
     (display s)
     (display "\n")
-    (case s 
-      ['nonbasic  (call-nonbasic-hex hex mem reg)]
-      ['SET  (SET cycles mem reg w-func)]
-      ['ADD  (ADD cycles mem reg w-func)]
-      ['SUB  (SUB cycles mem reg w-func)]
-      ['MUL  (MUL cycles mem reg w-func)]
-      ['DIV  (DIV cycles mem reg w-func)]
-      ['MOD  (MOD cycles mem reg w-func)]
-      ['SHL  (SHL cycles mem reg w-func)]
-      ['SHR  (SHR cycles mem reg w-func)]
-      ['AND  (AND cycles mem reg w-func)]
-      ['BOR  (BOR cycles mem reg w-func)]
-      ['XOR  (XOR cycles mem reg w-func)]
-      ['IFE  (IFE cycles mem reg w-func)]
-      ['IFN  (IFN cycles mem reg w-func)]
-      ['IFG  (IFG cycles mem reg w-func)]
-      ['IFB  (IFB cycles mem reg w-func)])))
+    (if (eq? s 'nonbasic)
+        (build-call-from-nonbasic-hex hex)
+        (let ([cycles (isr-size hex)]
+              [op-func (case s
+                         ['SET  SET]
+                         ['ADD  ADD]
+                         ['SUB  SUB]
+                         ['MUL  MUL]
+                         ['DIV  DIV]
+                         ['MOD  MOD]
+                         ['SHL  SHL]
+                         ['SHR  SHR]
+                         ['AND  AND]
+                         ['BOR  BOR]
+                         ['XOR  XOR]
+                         ['IFE  IFE]
+                         ['IFN  IFN]
+                         ['IFG  IFG]
+                         ['IFB  IFB])])
+          (op-func cycles (build-op-write hex))))))
 
 (define (in-between a v b)
   (and (<= a v)
@@ -476,8 +475,7 @@
     [(= #x1e var-id) (DEREF-NW)]
     [(= #x1f var-id) (NW)]
     [(in-between #x20 var-id #x3f) (LIT (- var-id #x20))]
-    [else (error "invalid Value")])
-  )
+    [else (error "invalid Value")]))
 
 (define (parse-vars hex ev-count mem reg)
   ;#b0000001111110000
@@ -509,9 +507,8 @@
                  (reg-update-a))]
     [(1)
      ;execute the hex with new value for Pb
-     (call-hex hex
-               mem
-               (reg-update-b))]))
+     ((build-call-from-hex hex) mem
+                                (reg-update-b))]))
 
 (define (parse-pc mem reg)
   (let* ([pc-val (reg-read reg 'PC)]
