@@ -13,6 +13,8 @@
 ;(define (reg-valid? r)
 ;  (member r ('A 'B 'C 'D 'X 'Y 'Z 'I 'J 'SP 'PC 'O)))
 
+
+;; look into replacing this with list like registers
 ; opcode format bbbbbbaaaaaaoooo
 (define (fetch-opcode hex)
   (case (bitwise-and #xf hex)
@@ -40,8 +42,8 @@
     [(#x01) 'JSR]
     [else (error "Reserved opcode" hex)]))
 
-(define (build-op-write hex)
-  (let ([i (extract-var-a hex)])
+(define (build-op-write var-a)
+  (let ([i var-a])
     (cond
       [(in-between  #x0 i  #x7) (build-op-reg-write (reg-name i))]
       [(in-between  #x8 i  #xf) op-mem-write]
@@ -69,8 +71,7 @@
         reg))
 
 (define (op-lit-write val mem reg)
-  (cons mem
-        reg))
+  (cons mem reg))
 
 
 (define (extract-var-a hex)
@@ -78,6 +79,24 @@
 
 (define (extract-var-b hex)
   (bitwise-bit-field hex 10 16))
+
+(define (nb-hex->oplist hex)
+  (list* (fetch-opcode-nonbasic hex)
+         (list (extract-var-b hex))))
+
+(define (hex->oplist hex)
+  (if (eq? (fetch-opcode hex)
+           'nonbasic)
+      (nb-hex->oplist hex)
+      (list* (fetch-opcode hex)
+             (list (extract-var-a hex)
+                   (extract-var-b hex)))))
+
+(define (read-next-instruction mem reg)
+  (let* ([pc-val (reg-read reg 'PC)]
+         [hex (memory-read mem pc-val)])
+    (hex->oplist hex)))
+
 
 (define (var-size v)
   (cond
@@ -92,26 +111,14 @@
                'CLK
                (+ clk clks))))
 
-(define (isr-size-nonbasic hex)
-  (let ([vb (var-size (extract-var-b hex))]
-        [s (fetch-opcode-nonbasic hex)])
-    (case s 
-      [else (+ 1 vb)])))
+(define (isr-size varlist)
+  (foldl + 1 (map var-size varlist)))
 
-(define (isr-size hex)
-  (let ([va (var-size (extract-var-a hex))]
-        [vb (var-size (extract-var-b hex))]
-        [s (fetch-opcode hex)])
-    (if (eq? 'nonbasic s)
-        (isr-size-nonbasic hex)
-        (+ 1 
-           (var-size (extract-var-a hex))
-           (var-size (extract-var-b hex))))))
-
-(define (skip-isr hex reg)
-  (reg-write reg 
-             'PC
-             (+ (reg-read reg 'PC) (isr-size hex))))
+(define (skip-isr oplist reg)
+  (let ([varlist (cdr oplist)])
+    (reg-write reg 
+               'PC
+               (+ (reg-read reg 'PC) (isr-size varlist)))))
 
 ; 0x1: SET a, b - sets a to b
 (define (SET cycles w-func)
@@ -267,8 +274,7 @@
   (lambda (mem reg)
     (let ([pa (reg-read reg 'Pa)]
           [pb (reg-read reg 'Pb)]
-          [hex (memory-read mem
-                            (reg-read reg 'PC))])
+          [n-oplist (read-next-instruction mem reg)])
       (if (= pa pb)
           (op-lit-write 0 
                         mem 
@@ -276,7 +282,7 @@
                                      op-cycles))
           (op-lit-write 0 
                         mem 
-                        (clock-cycle (skip-isr hex reg)
+                        (clock-cycle (skip-isr n-oplist reg)
                                      (+ 1 op-cycles))))))) ; skip next instruction & values
 ; 0xd: IFN a, b - performs next instruction only if a!=b
 (define (IFN cycles w-func)
@@ -284,12 +290,11 @@
   (lambda (mem reg)
     (let ([pa (reg-read reg 'Pa)]
           [pb (reg-read reg 'Pb)]
-          [hex (memory-read mem
-                            (reg-read reg 'PC))])
+          [n-oplist (read-next-instruction mem reg)])
       (if (= pa pb)
           (op-lit-write 0 
                         mem 
-                        (clock-cycle (skip-isr hex reg)
+                        (clock-cycle (skip-isr n-oplist reg)
                                      (+ 1 op-cycles))) ; skip next instruction & values
           (op-lit-write 0 
                         mem 
@@ -301,8 +306,7 @@
   (lambda (mem reg)
     (let ([pa (reg-read reg 'Pa)]
           [pb (reg-read reg 'Pb)]
-          [hex (memory-read mem
-                            (reg-read reg 'PC))])
+          [n-oplist (read-next-instruction mem reg)])
       (if (> pa pb)
           (op-lit-write 0 
                         mem 
@@ -310,7 +314,7 @@
                                      op-cycles))
           (op-lit-write 0 
                         mem 
-                        (clock-cycle (skip-isr hex reg)
+                        (clock-cycle (skip-isr n-oplist reg)
                                      (+ 1 op-cycles))))))) ; skip next instruction & values
 ; 0xf: IFB a, b - performs next instruction only if (a&b)!=0
 (define (IFB cycles w-func)
@@ -318,12 +322,11 @@
   (lambda (mem reg)
     (let ([val (bitwise-and (reg-read reg 'Pa)
                             (reg-read reg 'Pb))]
-          [hex (memory-read mem
-                            (reg-read reg 'PC))])
+          [n-oplist (read-next-instruction mem reg)])
       (if (= val 0)
           (op-lit-write 0 
                         mem 
-                        (clock-cycle (skip-isr hex reg)
+                        (clock-cycle (skip-isr n-oplist reg)
                                      (+ 1 op-cycles))) ; skip next instruction & values
           (op-lit-write 0 
                         mem 
@@ -337,44 +340,43 @@
   (lambda (mem reg)
     (let* ([new-reg (reg-dec reg 'SP)]
            [pc (reg-read new-reg 'PC)])
-      ((build-op-reg-write 'PC) (reg-read reg 'Pb)
+      ((build-op-reg-write 'PC) (reg-read reg 'Pa)
                                 (memory-write mem
                                               (reg-read new-reg 'SP)
                                               pc)
                                 (clock-cycle new-reg
                                              op-cycles)))))
 
-(define (build-call-from-nonbasic-hex hex)
-  (let ([s (fetch-opcode-nonbasic hex)]
-        [cycles (isr-size hex)])
-    (display s)
-    (case s
-      ['JSR (JSR cycles)])))
+(define (build-call-from-nonbasic-oplist oplist)
+  (let* ([varlist (cdr oplist)]
+         [cycles (isr-size varlist)]
+         [op-func (case (car oplist)
+                    ['JSR JSR])])
+    (display (car oplist))
+    (op-func cycles)))
 
-(define (build-call-from-hex hex)
-  (let ([s (fetch-opcode hex)])
-    (display s)
-    (display "\n")
-    (if (eq? s 'nonbasic)
-        (build-call-from-nonbasic-hex hex)
-        (let ([cycles (isr-size hex)]
-              [op-func (case s
-                         ['SET  SET]
-                         ['ADD  ADD]
-                         ['SUB  SUB]
-                         ['MUL  MUL]
-                         ['DIV  DIV]
-                         ['MOD  MOD]
-                         ['SHL  SHL]
-                         ['SHR  SHR]
-                         ['AND  AND]
-                         ['BOR  BOR]
-                         ['XOR  XOR]
-                         ['IFE  IFE]
-                         ['IFN  IFN]
-                         ['IFG  IFG]
-                         ['IFB  IFB])])
-          (op-func cycles (build-op-write hex))))))
+(define (build-call-from-oplist oplist)
+  (display (first oplist))
+  (display "\n")
+  (let* ([varlist (cdr oplist)]
+         [cycles (isr-size varlist)]
+         [op-func (case (first oplist)
+                    ['SET  SET]
+                    ['ADD  ADD]
+                    ['SUB  SUB]
+                    ['MUL  MUL]
+                    ['DIV  DIV]
+                    ['MOD  MOD]
+                    ['SHL  SHL]
+                    ['SHR  SHR]
+                    ['AND  AND]
+                    ['BOR  BOR]
+                    ['XOR  XOR]
+                    ['IFE  IFE]
+                    ['IFN  IFN]
+                    ['IFG  IFG]
+                    ['IFB  IFB])])
+    (op-func cycles (build-op-write (cadr oplist)))))
 
 (define (in-between a v b)
   (and (<= a v)
@@ -389,16 +391,14 @@
   ;0x00-0x07: register
   (define (REG r-id)
     (display (list 'REG (reg-name r-id)))
-    (set-param (reg-read reg r-id)
-               0
-               reg))
+    (set-param (reg-read reg r-id) 0))
+  
   ;0x08-0x0f: [register]
   (define (DEREF-REG r-id)
     (display (list 'DEREF 'REG (reg-name r-id)))
     (let ([addr (reg-read reg r-id)])
-      (set-param (memory-read mem addr)
-                 addr
-                 reg)))
+      (set-param (memory-read mem addr) addr)))
+  
   ;0x10-0x17: [next word + register]
   ; [next word + register]
   (define (DEREF-NW+ r-id)
@@ -406,60 +406,54 @@
     (let* ([nw (memory-read mem (reg-read reg 'PC))]
            [r-val (reg-read reg r-id)]
            [calc-addr (+ nw r-val)])
-      (display "calc-addr")
-      (display calc-addr)
-      (display "\n")
-      (reg-inc (set-param (memory-read mem calc-addr)
-                          calc-addr
-                          reg)
+      (printf "calc-addr:~x\n" calc-addr)
+      (reg-inc (set-param (memory-read mem calc-addr) calc-addr)
                'PC)))
+  
   ;after reg-inc, sp-val is no longer valid in this context\
   ;0x18: POP / [SP++]
   (define (POP)
     (display (list 'POP))
     (let ([sp (reg-read reg 'SP)])
-      (reg-inc (set-param (memory-read mem sp)
-                          sp
-                          reg)
+      (reg-inc (set-param (memory-read mem sp) sp)
                'SP)))
+  
   ;0x19: PEEK / [SP]
   (define (PEEK)
     (display (list 'PEEK))
     (DEREF-REG 'SP))
+  
   ; fake the fact that
   ; sp-val = [--SP]
   (define (PUSH)
     (display (list 'PUSH))
     (let ([sp-val (- (reg-read reg 'SP) 1)])
-      (reg-dec (set-param (memory-read mem sp-val)
-                          sp-val
-                          reg)
+      (reg-dec (set-param (memory-read mem sp-val) sp-val)
                'SP)))
   (define (SP)
     (REG 'SP))
+  
   (define (PC)
     (REG 'PC))
+  
   (define (O)
     (REG 'O))
+  
   (define (DEREF-NW)
     (display (list 'DEREF 'NW))
     (let ([adr (memory-read mem (reg-read reg 'PC))])
-      (reg-inc (set-param (memory-read mem adr)
-                          adr
-                          reg)
+      (reg-inc (set-param (memory-read mem adr) adr)
                'PC)))
+  
   (define (NW)
     (display (list 'NW))
     (let ([pc (reg-read reg 'PC)])
-      (reg-inc (set-param (memory-read mem pc)
-                          0
-                          reg)
+      (reg-inc (set-param (memory-read mem pc) 0)
                'PC)))
+  
   (define (LIT val)
     (display (list val))
-    (set-param val
-               0
-               reg))
+    (set-param val 0))
   
   (cond
     [(in-between  #x0 var-id #x7)  (REG (reg-name var-id))]
@@ -477,51 +471,66 @@
     [(in-between #x20 var-id #x3f) (LIT (- var-id #x20))]
     [else (error "invalid Value")]))
 
-(define (parse-vars hex ev-count mem reg)
-  ;#b0000001111110000
-  (define (reg-update-a)
-    (update-var (extract-var-a hex) 
-                mem 
-                reg 
-                (lambda (v vadr reg)
-                  (printf "Pa:~x Paadr:~x\n" v vadr)
-                  (reg-write (reg-write reg 'Pa v)
-                             'Paadr
-                             vadr))))
-  ;#b1111110000000000
-  (define (reg-update-b)
-    (update-var (extract-var-b hex)
-                mem
-                reg
-                (lambda (v vadr reg)
-                  (printf "Pb:~x Pbadr:~x\n" v vadr)
-                  (reg-write (reg-write reg 'Pb v)
-                             'Pbadr
-                             vadr)))) 
-  (case ev-count
-    [(2)
-     ;update registers with new value for Pa
-     (parse-vars hex
-                 (- ev-count 1)
-                 mem 
-                 (reg-update-a))]
-    [(1)
-     ;execute the hex with new value for Pb
-     ((build-call-from-hex hex) mem
-                                (reg-update-b))]))
+(define (parse-vars oplist ev-count mem reg)
+  (let ([varlist (cdr oplist)])
+    ;#b0000001111110000
+    (define (reg-update-a)
+      (update-var (first varlist)
+                  mem 
+                  reg 
+                  (lambda (v vadr)
+                    (printf "Pa:~x Paadr:~x\n" v vadr)
+                    (reg-write (reg-write reg 'Pa v)
+                               'Paadr
+                               vadr))))
+    ;#b1111110000000000
+    (define (reg-update-b)
+      (update-var (second varlist)
+                  mem
+                  reg
+                  (lambda (v vadr)
+                    (printf "Pb:~x Pbadr:~x\n" v vadr)
+                    (reg-write (reg-write reg 'Pb v)
+                               'Pbadr
+                               vadr))))
+    (case ev-count
+      [(2)
+       ;update registers with new value for Pa
+       (parse-vars oplist
+                   (- ev-count 1)
+                   mem 
+                   (reg-update-a))]
+      [(1)
+       ;execute the oplist with new value for Pb
+       ((build-call-from-oplist oplist) mem
+                                        (reg-update-b))])))
 
-(define (parse-pc mem reg)
-  (let* ([pc-val (reg-read reg 'PC)]
-         [hex (memory-read mem pc-val)]
-         [ev-count (if (eq? (fetch-opcode hex) 'nonbasic)
-                       1
-                       2)])
-    ;(if (>= pc-val 8)
-    ;(cons mem reg)
-    (parse-vars hex
-                ev-count
-                mem
-                (reg-inc reg 'PC))));)
+(define (parse-vars-nonbasic oplist mem reg)
+  (let ([varlist (cdr oplist)])
+    ;#b1111110000000000
+    (define (reg-update-a)
+      (update-var (first varlist) 
+                  mem 
+                  reg 
+                  (lambda (v vadr)
+                    (printf "Pa:~x Paadr:~x\n" v vadr)
+                    (reg-write (reg-write reg 'Pa v)
+                               'Paadr
+                               vadr))))
+    ;execute the oplist with new value for Pa, even though its in var-b's spot
+    ((build-call-from-nonbasic-oplist oplist) mem
+                                              (reg-update-a))))
+
+(define (step-cpu mem reg)
+  (let ([oplist (read-next-instruction mem reg)])
+    (if (= (length (cdr oplist)) 1) ;; lazy non-basic detection
+        (parse-vars-nonbasic oplist
+                             mem
+                             (reg-inc reg 'PC))
+        (parse-vars oplist
+                    2 ; number of params
+                    mem
+                    (reg-inc reg 'PC)))))
 
 ;(fetch-opcode (memory-read (memory-fill Mem 0 program) (reg-read Reg 'PC)))
 ;(reg-write Reg 'Pa 123)
@@ -536,7 +545,7 @@
                (display "\n")
                (display mem)
                (display "\n")
-               (run (parse-pc mem reg) pc)))))
+               (run (step-cpu mem reg) pc)))))
 
 
 ;Sample ASM code to be loaded
