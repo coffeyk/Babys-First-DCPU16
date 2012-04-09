@@ -15,32 +15,37 @@
 
 
 ;; look into replacing this with list like registers
+;; add function calls to other half
 ; opcode format bbbbbbaaaaaaoooo
+
 (define (fetch-opcode hex)
-  (case (bitwise-and #xf hex)
-    [(#x0) 'nonbasic]
-    [(#x1) 'SET]
-    [(#x2) 'ADD]
-    [(#x3) 'SUB]
-    [(#x4) 'MUL]
-    [(#x5) 'DIV]
-    [(#x6) 'MOD]
-    [(#x7) 'SHL]
-    [(#x8) 'SHR]
-    [(#x9) 'AND]
-    [(#xa) 'BOR]
-    [(#xb) 'XOR]
-    [(#xc) 'IFE]
-    [(#xd) 'IFN]
-    [(#xe) 'IFG]
-    [(#xf) 'IFB]))
+  (define opcode-list
+    '((nonbasic . 0)
+      (SET . 0)
+      (ADD . 0) 
+      (SUB . 0)
+      (MUL . 0)
+      (DIV . 0)
+      (MOD . 0)
+      (SHL . 0)
+      (SHR . 0)
+      (AND . 0)
+      (BOR . 0)
+      (XOR . 0)
+      (IFE . 0)
+      (IFN . 0)
+      (IFG . 0) 
+      (IFB . 0)))
+  (car (list-ref opcode-list (bitwise-and #xf hex))))
+
 
 ; non-basic opcode format aaaaaaoooooo0000
 (define (fetch-opcode-nonbasic hex)
-  (case (bitwise-and #b111111
-                     (arithmetic-shift hex -4))
-    [(#x01) 'JSR]
-    [else (error "Reserved opcode" hex)]))
+  (define nonbasic-opcode-list
+    '(('undef . 0)
+      (JSR . 0)))
+  (car (list-ref nonbasic-opcode-list (bitwise-and #b111111
+                                          (arithmetic-shift hex -4)))))
 
 (define (build-op-write var-a)
   (let ([i var-a])
@@ -553,9 +558,12 @@
                       #x7dc1 #x001a #xa861 #x7c01 #x2000 #x2161 #x2000 #x8463
                       #x806d #x7dc1 #x000d #x9031 #x7c10 #x0018 #x7dc1 #x001a
                       #x9037 #x61c1 #x7dc1 #x001a #x0000))
+(define program-test (list #x7deb #x000e #x5eed #x7d04 #x0002 #x6255 #x7d02 #x0002 
+                           #x3619 #x8503 #x0001 #x433e #x0001 #x01c1 #xdaee #xf121 
+                           #x5124 #xe2a2))
 
 ; fill memory starting at #x0 from program
 (memory-fill Mem 0 program)
 
 ; execute program until PC is static
-(run (cons (memory-fill Mem 0 program) Reg) -1)
+(run (cons (memory-fill Mem 0 program-test) Reg) -1)
