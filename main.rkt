@@ -63,7 +63,7 @@
                        [label "Run"]
                        ; Callback procedure for a button click:
                        (callback (lambda (button event)
-                                   (send cpu-timer start 0)))))
+                                   (send cpu-timer start 1)))))
 (define step-buton (new button% [parent buton-panel]
                         [label "Step"]
                         ; Callback procedure for a button click:
