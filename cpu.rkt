@@ -1,67 +1,30 @@
 #lang racket
 
-;(require "registers.rkt") ;old structure based registers
-(require "registers2.rkt") ; new list based registers
+(require "registers.rkt") ; new list based registers
 (require "memory.rkt")
 
-;(define Reg (registers 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0))
-(define Reg (build-reg))
+(provide step-cpu)
 
-(define Mem (make-immutable-hash))
-;(define Reg (make-immutable-hash))
+(struct instruction
+  (opcode
+   op-func
+   var-list
+   basic?))
 
-;(define (reg-valid? r)
-;  (member r ('A 'B 'C 'D 'X 'Y 'Z 'I 'J 'SP 'PC 'O)))
-
-
-;; look into replacing this with list like registers
-;; add function calls to other half
-; opcode format bbbbbbaaaaaaoooo
-
-(define (fetch-opcode hex)
-  (define opcode-list
-    '((nonbasic . 0)
-      (SET . 0)
-      (ADD . 0) 
-      (SUB . 0)
-      (MUL . 0)
-      (DIV . 0)
-      (MOD . 0)
-      (SHL . 0)
-      (SHR . 0)
-      (AND . 0)
-      (BOR . 0)
-      (XOR . 0)
-      (IFE . 0)
-      (IFN . 0)
-      (IFG . 0) 
-      (IFB . 0)))
-  (car (list-ref opcode-list (bitwise-and #xf hex))))
-
-
-; non-basic opcode format aaaaaaoooooo0000
-(define (fetch-opcode-nonbasic hex)
-  (define nonbasic-opcode-list
-    '(('undef . 0)
-      (JSR . 0)))
-  (car (list-ref nonbasic-opcode-list (bitwise-and #b111111
-                                          (arithmetic-shift hex -4)))))
-
-(define (build-op-write var-a)
-  (let ([i var-a])
-    (cond
-      [(in-between  #x0 i  #x7) (build-op-reg-write (reg-name i))]
-      [(in-between  #x8 i  #xf) op-mem-write]
-      [(in-between #x10 i #x17) op-mem-write]
-      [(= #x18 i)               op-mem-write]
-      [(= #x19 i)               op-mem-write]
-      [(= #x1a i)               op-mem-write]
-      [(in-between #x1b i #x1d) (build-op-reg-write (reg-name (- i 19)))]
-      [(= #x1e i)               op-mem-write]
-      [(= #x1f i)               op-lit-write]
-      [(in-between #x20 i #x3f) op-lit-write]
-      [else (error "invalid Value")]
-      )))
+; returns the appropriate function to write to the Value
+(define (build-op-write var-id)
+  (cond
+    [(in-between  #x0 var-id  #x7) (build-op-reg-write (reg-name var-id))]
+    [(in-between  #x8 var-id  #xf) op-mem-write]
+    [(in-between #x10 var-id #x17) op-mem-write]
+    [(= #x18 var-id)               op-mem-write]
+    [(= #x19 var-id)               op-mem-write]
+    [(= #x1a var-id)               op-mem-write]
+    [(in-between #x1b var-id #x1d) (build-op-reg-write (reg-name (- var-id 19)))]
+    [(= #x1e var-id)               op-mem-write]
+    [(= #x1f var-id)               op-lit-write]
+    [(in-between #x20 var-id #x3f) op-lit-write]
+    [else (error "invalid Value")]))
 
 ; the op-...-write functions return the final (memory . registers)
 (define (build-op-reg-write r-id)
@@ -78,49 +41,59 @@
 (define (op-lit-write val mem reg)
   (cons mem reg))
 
-
+; extract the value A id from the hex instruction
 (define (extract-var-a hex)
   (bitwise-bit-field hex 4 10))
 
+; extract the value B id from the hex instruction
 (define (extract-var-b hex)
   (bitwise-bit-field hex 10 16))
 
-(define (nb-hex->oplist hex)
-  (list* (fetch-opcode-nonbasic hex)
-         (list (extract-var-b hex))))
-
-(define (hex->oplist hex)
-  (if (eq? (fetch-opcode hex)
+; construct an instruction based on the hex code
+(define (hex->instruction hex)
+  (if (eq? (car (fetch-opcode hex))
            'nonbasic)
-      (nb-hex->oplist hex)
-      (list* (fetch-opcode hex)
-             (list (extract-var-a hex)
-                   (extract-var-b hex)))))
+      (let ([op (fetch-opcode-nonbasic hex)])
+        (instruction (car op); symbol
+                     (cdr op); op-func to be called
+                     (list (extract-var-b hex))
+                     #f)) ; nonbasic instruction
+      (let ([op (fetch-opcode hex)])
+        (instruction (car op); symbol
+                     (cdr op); op-func to be called
+                     (list (extract-var-b hex) ; reverse order to accomodate nonbasic
+                           (extract-var-a hex))
+                     #t)))) ; basic instruction
 
+; returns the instruction at 'PC
+; does not increment 'PC
+; read-next-instruction -> instruction
 (define (read-next-instruction mem reg)
   (let* ([pc-val (reg-read reg 'PC)]
          [hex (memory-read mem pc-val)])
-    (hex->oplist hex)))
+    (hex->instruction hex)))
 
-
-(define (var-size v)
-  (cond
-    [(in-between #x10 v #x17) 1]
-    [(= #x1e v) 1]
-    [(= #x1f v) 1]
-    [else 0]))
-
+; adds clks to the 'CLK register
+; clock-cycle -> register
 (define (clock-cycle reg clks)
   (let ([clk (reg-read reg 'CLK)])
     (reg-write reg
                'CLK
                (+ clk clks))))
 
+; calculates the size of an instruction in words, based on the varlist ids
 (define (isr-size varlist)
-  (foldl + 1 (map var-size varlist)))
+  (foldl + 1 (map (lambda (var-id)
+                    (cond
+                      [(in-between #x10 var-id #x17) 1]
+                      [(= #x1e var-id) 1]
+                      [(= #x1f var-id) 1]
+                      [else 0]))
+                  varlist)))
 
+; increment the 'PC to the start of the next instruction
 (define (skip-isr oplist reg)
-  (let ([varlist (cdr oplist)])
+  (let ([varlist (instruction-var-list oplist)])
     (reg-write reg 
                'PC
                (+ (reg-read reg 'PC) (isr-size varlist)))))
@@ -340,58 +313,81 @@
 
 
 ; 0x01 JSR a - pushes the address of the next instruction to the stack, then sets PC to a
-(define (JSR cycles)
+; actually used Pb for simplicity's sake
+(define (JSR cycles w-func)
   (define op-cycles (+ 1 cycles))
   (lambda (mem reg)
     (let* ([new-reg (reg-dec reg 'SP)]
            [pc (reg-read new-reg 'PC)])
-      ((build-op-reg-write 'PC) (reg-read reg 'Pa)
+      ((build-op-reg-write 'PC) (reg-read reg 'Pb)
                                 (memory-write mem
                                               (reg-read new-reg 'SP)
                                               pc)
                                 (clock-cycle new-reg
                                              op-cycles)))))
 
-(define (build-call-from-nonbasic-oplist oplist)
-  (let* ([varlist (cdr oplist)]
-         [cycles (isr-size varlist)]
-         [op-func (case (car oplist)
-                    ['JSR JSR])])
-    (display (car oplist))
-    (op-func cycles)))
+; opcode format bbbbbbaaaaaaoooo
+; returns the symbol and op-func for a basic hex instruction
+(define (fetch-opcode hex)
+  (define opcode-list
+    (list 
+     (cons 'nonbasic error)
+     (cons 'SET SET)
+     (cons 'ADD ADD) 
+     (cons 'SUB SUB)
+     (cons 'MUL MUL)
+     (cons 'DIV DIV)
+     (cons 'MOD MOD)
+     (cons 'SHL SHL)
+     (cons 'SHR SHR)
+     (cons 'AND AND)
+     (cons 'BOR BOR)
+     (cons 'XOR XOR)
+     (cons 'IFE IFE)
+     (cons 'IFN IFN)
+     (cons 'IFG IFG) 
+     (cons 'IFB IFB)))
+  (let ([id (bitwise-and #xf hex)])
+    (list-ref opcode-list id)))
 
+
+; non-basic opcode format aaaaaaoooooo0000
+; returns the symbol and op-func for a noon-basic hex instruction
+(define (fetch-opcode-nonbasic hex)
+  (define nonbasic-opcode-list
+    (list
+     (cons 'undef error)
+     (cons 'JSR JSR)))
+  (let ([id (bitwise-and #b111111
+                         (arithmetic-shift hex -4))])
+    (list-ref nonbasic-opcode-list id)))
+
+; fill in the information needed by op-func to generate
+; the final function to be called to execute the oplist
 (define (build-call-from-oplist oplist)
-  (display (first oplist))
-  (display "\n")
-  (let* ([varlist (cdr oplist)]
-         [cycles (isr-size varlist)]
-         [op-func (case (first oplist)
-                    ['SET  SET]
-                    ['ADD  ADD]
-                    ['SUB  SUB]
-                    ['MUL  MUL]
-                    ['DIV  DIV]
-                    ['MOD  MOD]
-                    ['SHL  SHL]
-                    ['SHR  SHR]
-                    ['AND  AND]
-                    ['BOR  BOR]
-                    ['XOR  XOR]
-                    ['IFE  IFE]
-                    ['IFN  IFN]
-                    ['IFG  IFG]
-                    ['IFB  IFB])])
-    (op-func cycles (build-op-write (cadr oplist)))))
+  (let* ([varlist (instruction-var-list oplist)]
+         [var-cycles (isr-size varlist)]
+         [op-func (instruction-op-func oplist)])
+    (op-func var-cycles (build-op-write (last varlist)))))
 
 (define (in-between a v b)
   (and (<= a v)
        (<= v b)))
 
-; sample set-param
-; reg is the register structure being updated
-; returns a structure updated such that register 'Pa/'Pb are set to v
-; lambda(v) (reg-write r (reg-id 'Pa) v) ; write parameter a
-; lambda(v) (reg-write r (reg-id 'Pb) v) ; write parameter b
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; reg is the register being updated
+; returns updated register updated such that 'Pa/'Pb are set to v
+; and 'Paadr/'Pbadr are set to vadr
+;
+; SAMPLE set-param
+; 
+; (lambda (v vadr)
+;   (reg-write (reg-write reg 'Pa v)
+;              'Paadr
+;              vadr))
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
 (define (update-var var-id mem reg set-param)
   ;0x00-0x07: register
   (define (REG r-id)
@@ -435,27 +431,33 @@
     (let ([sp-val (- (reg-read reg 'SP) 1)])
       (reg-dec (set-param (memory-read mem sp-val) sp-val)
                'SP)))
+  ;0x1b: SP
   (define (SP)
     (REG 'SP))
   
+  ;0x1c: PC
   (define (PC)
     (REG 'PC))
   
+  ;0x1d: O
   (define (O)
     (REG 'O))
   
+  ;0x1e: [next word]
   (define (DEREF-NW)
     (display (list 'DEREF 'NW))
     (let ([adr (memory-read mem (reg-read reg 'PC))])
       (reg-inc (set-param (memory-read mem adr) adr)
                'PC)))
   
+  ;0x1f: next word
   (define (NW)
     (display (list 'NW))
     (let ([pc (reg-read reg 'PC)])
       (reg-inc (set-param (memory-read mem pc) 0)
                'PC)))
   
+  ;0x20-0x3f: literal 0x00-0x1f
   (define (LIT val)
     (display (list val))
     (set-param val 0))
@@ -477,27 +479,32 @@
     [else (error "invalid Value")]))
 
 (define (parse-vars oplist ev-count mem reg)
-  (let ([varlist (cdr oplist)])
-    ;#b0000001111110000
-    (define (reg-update-a)
-      (update-var (first varlist)
+  (let ([varlist (instruction-var-list oplist)])
+    (define (reg-update var r raddr str)
+      (update-var var
                   mem 
                   reg 
                   (lambda (v vadr)
-                    (printf "Pa:~x Paadr:~x\n" v vadr)
-                    (reg-write (reg-write reg 'Pa v)
-                               'Paadr
+                    (printf str v vadr)
+                    (reg-write (reg-write reg r v)
+                               raddr
                                vadr))))
+    ;#b0000001111110000
+    ; reg-update-a -> reg
+    (define (reg-update-a)
+      (reg-update (last varlist)
+                  'Pa
+                  'Paadr
+                  "Pa:~x Paadr:~x\n"))
+    
     ;#b1111110000000000
+    ; reg-update-b -> reg
     (define (reg-update-b)
-      (update-var (second varlist)
-                  mem
-                  reg
-                  (lambda (v vadr)
-                    (printf "Pb:~x Pbadr:~x\n" v vadr)
-                    (reg-write (reg-write reg 'Pb v)
-                               'Pbadr
-                               vadr))))
+      (reg-update (first varlist)
+                  'Pb
+                  'Pbadr
+                  "Pb:~x Pbadr:~x\n"))
+    
     (case ev-count
       [(2)
        ;update registers with new value for Pa
@@ -510,60 +517,14 @@
        ((build-call-from-oplist oplist) mem
                                         (reg-update-b))])))
 
-(define (parse-vars-nonbasic oplist mem reg)
-  (let ([varlist (cdr oplist)])
-    ;#b1111110000000000
-    (define (reg-update-a)
-      (update-var (first varlist) 
-                  mem 
-                  reg 
-                  (lambda (v vadr)
-                    (printf "Pa:~x Paadr:~x\n" v vadr)
-                    (reg-write (reg-write reg 'Pa v)
-                               'Paadr
-                               vadr))))
-    ;execute the oplist with new value for Pa, even though its in var-b's spot
-    ((build-call-from-nonbasic-oplist oplist) mem
-                                              (reg-update-a))))
-
+; execute the instruction located at 'PC
+; 'PC will end up pointing to the next instruction
+; step-cpu -> (mem . reg)
 (define (step-cpu mem reg)
-  (let ([oplist (read-next-instruction mem reg)])
-    (if (= (length (cdr oplist)) 1) ;; lazy non-basic detection
-        (parse-vars-nonbasic oplist
-                             mem
-                             (reg-inc reg 'PC))
-        (parse-vars oplist
-                    2 ; number of params
-                    mem
-                    (reg-inc reg 'PC)))))
-
-;(fetch-opcode (memory-read (memory-fill Mem 0 program) (reg-read Reg 'PC)))
-;(reg-write Reg 'Pa 123)
-(define (run mem-reg oldpc)
-  (let* ([mem (car mem-reg)]
-         [reg (cdr mem-reg)]
-         [pc (reg-read reg 'PC)])
-    (if (= oldpc pc)
-        mem-reg
-        (begin (display "\n")
-               (display reg)
-               (display "\n")
-               (display mem)
-               (display "\n")
-               (run (step-cpu mem reg) pc)))))
-
-
-;Sample ASM code to be loaded
-(define program (list #x7c01 #x0030 #x7de1 #x1000 #x0020 #x7803 #x1000 #xc00d
-                      #x7dc1 #x001a #xa861 #x7c01 #x2000 #x2161 #x2000 #x8463
-                      #x806d #x7dc1 #x000d #x9031 #x7c10 #x0018 #x7dc1 #x001a
-                      #x9037 #x61c1 #x7dc1 #x001a #x0000))
-(define program-test (list #x7deb #x000e #x5eed #x7d04 #x0002 #x6255 #x7d02 #x0002 
-                           #x3619 #x8503 #x0001 #x433e #x0001 #x01c1 #xdaee #xf121 
-                           #x5124 #xe2a2))
-
-; fill memory starting at #x0 from program
-(memory-fill Mem 0 program)
-
-; execute program until PC is static
-(run (cons (memory-fill Mem 0 program-test) Reg) -1)
+  (let* ([oplist (read-next-instruction mem reg)]
+         [var-count (length (instruction-var-list oplist))])
+    (printf "~s\n" (instruction-opcode oplist))
+    (parse-vars oplist
+                var-count ; number of params
+                mem
+                (reg-inc reg 'PC))))
