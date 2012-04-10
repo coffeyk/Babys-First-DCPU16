@@ -4,20 +4,51 @@
 (require racket/gui/base)
 (require srfi/13)
 
+(require "util.rkt")
 (require "cpu.rkt")
 (require "memory.rkt")
 (require "registers.rkt")
 
 (define rows 8)
+
+(define red-style (make-object style-delta%))
+;(send red-style set-delta-foreground "RoyalBlue")
+(send red-style set-delta-background "Tan")
+
+(define tan-bg-style (make-object style-delta%))
+(send tan-bg-style set-delta-background "Tan")
+
+
+(define (screen-pprint mem)
+  (define base-addr #x8000)
+  (define cols 32)
+  (define rows 16)
+  
+  (define (hex->char adr)
+    (let ([hex (bitwise-and (memory-read mem adr)
+                            #xff)])
+      (if (eq? hex 0)
+          " "
+          (bytes->string/utf-8 (make-bytes 1 hex)))))
+  
+  
+  (define (print-row row)
+    (string-append* ""
+                    (map hex->char
+                         (build-list cols
+                                     (lambda (x)
+                                       (+ x
+                                          (* row cols)
+                                          base-addr))))))
+  (string-join (map print-row
+                    (build-list rows values))
+               "\n"))
+
 ;(define (string-pad str width [pad #\space])
 ;  (define field-width (min width (string-length str)))
 ;  (define lmargin (- width field-width))
 ;  (string-append (build-string lmargin (lambda (x) pad))
 ;                 str))
-(define (hex-pad x)
-  (string-pad (format "~x" x) 4 #\0))
-(define (row-header key)
-  (string-append (hex-pad (- key (remainder key rows))) ":"))
 
 
 ; Make a frame by instantiating the frame% class
@@ -68,12 +99,20 @@
                       [min-width 100]
                       [min-height 500]))
 
+(define mem-panel (new vertical-panel% [parent text-panel]))
 (define mem-canv-text (new text%))
-(define ed-canv (new editor-canvas% [parent text-panel]
-                     [min-width 400]
-                     [min-height 500]
+(define ed-canv (new editor-canvas% [parent mem-panel]
+                     [min-width 450]
+                     [min-height 300]
                      [style (list 'hide-hscroll)]
                      [editor mem-canv-text]))
+
+(define screen-canv-text (new text%))
+(define screen-canv (new editor-canvas% [parent mem-panel]
+                         [min-width 250]
+                         [min-height 300]
+                         [style (list 'hide-hscroll)]
+                         [editor screen-canv-text])) 
 
 ; Show the frame by calling its show method
 (send frame show #t)
@@ -87,6 +126,37 @@
                (refresh)
                
                (super-new)
+               
+               ; format-list
+               ; ( style-delta% addr1 addr2 )
+               ; ( style-delta2% addr3 )
+               (define/private (memory-format pp-str format-list (cols 8))
+                 (define (apply-style style addr)
+                   (let* ([addr-header (row-header addr cols)]
+                          [header-idx (string-contains pp-str addr-header)]
+                          [addr-col (remainder addr cols)])
+                     (if header-idx
+                         (let* ([addr-str-len (string-length (hex-pad addr))]
+                                [addr-str-start (+ header-idx
+                                                   (string-length addr-header)
+                                                   (* addr-col 
+                                                      (+ addr-str-len 1)))]
+                                [addr-str-end (+ addr-str-start
+                                                 addr-str-len)])
+                           (send mem-canv-text 
+                                 change-style 
+                                 style 
+                                 addr-str-start 
+                                 addr-str-end))
+                         (void))))
+                 (map (lambda (format-entry)
+                        (let ([style (car format-entry)]
+                              [addrs (cdr format-entry)])
+                          (map (lambda (addr)
+                                 (apply-style style addr))
+                               addrs)))
+                      format-list))
+               
                
                (define/public (get-mem)
                  current-mem)
@@ -104,26 +174,38 @@
                  (refresh))
                
                
-               (define/public (refresh)
-                 (let ([memory-text (memory-pprint current-mem)]
-                       [pc (reg-read current-reg 'PC)])
+               (define/public (refresh (mem-diff-list '()))
+                 (let* ([memory-text (memory-pprint current-mem)]
+                        [pc (reg-read current-reg 'PC)]
+                        [sp (reg-read current-reg 'SP)]
+                        [paadr (reg-read current-reg 'Paadr)]
+                        [i-size (calc-instruction-size current-mem pc)])
                    (send reg-text set-value (reg-pprint current-reg))
                    (send mem-canv-text erase)
                    (send mem-canv-text change-style (make-object style-delta% 'change-family 'modern))
                    (send mem-canv-text insert memory-text )
-                   (let ([row-idx (string-contains memory-text (row-header pc))])
-                     (if row-idx
-                         (let ([offset (+ row-idx 6 (* (remainder pc 8)
-                                                       5))])
-                           (send mem-canv-text change-style (make-object style-delta% 'change-toggle-underline)
-                                 offset (+ 4 offset)))
-                         (void)))))
+                   (memory-format memory-text (list (list* (make-object style-delta% 'change-toggle-underline) 
+                                                           (map (lambda (x)
+                                                                  (+ x pc))
+                                                                (build-list i-size values)))
+                                                    (list* red-style mem-diff-list)))
+                   (send screen-canv-text erase)
+                   (send screen-canv-text change-style (make-object style-delta% 'change-family 'modern))
+                   (send screen-canv-text insert (screen-pprint current-mem))))
+               ;(let ([row-idx (string-contains memory-text (row-header pc))])
+               ;  (if row-idx
+               ;      (let ([offset (+ row-idx 6 (* (remainder pc 8)
+               ;                                    5))])
+               ;        (send mem-canv-text change-style (make-object style-delta% 'change-toggle-underline)
+               ;              offset (+ 4 offset)))
+               ;      (void)))))
                
                (define/public (tick)
                  (define mem-reg (step-cpu current-mem current-reg))
+                 (define mem-dif-list (memory-diff current-mem (car mem-reg)))
                  (set! current-mem (car mem-reg))
                  (set! current-reg (cdr mem-reg))
-                 (refresh))))
+                 (refresh mem-dif-list))))
 
 ; calls step-cpu until the 'PC stops changing
 (define (run mem-reg oldpc)
@@ -149,21 +231,27 @@
                            #x3619 #x8503 #x0001 #x433e #x0001 #x01c1 #xdaee #xf121 
                            #x5124 #xe2a2))
 
+(define program-display (list #x7DE1 #x8000 #x0041 #x7DE1 #x8001 #x0042 #x7DE1 #x8002 #x0043 #x7DE1 #x8003 #x0044))
+
 (define Reg (build-reg))
 (define Mem (make-immutable-hash))
 
 ; fill memory starting at #x0 from program
 ;(memory-fill Mem 0 program)
 
-;(define program-file (command-line #:args (filename) filename))
+(define program-file (command-line #:args ((filename "")) filename))
+;(display program-file)
 ;(define in (open-input-file program-file)); #:mode 'binary))
 ;(memory-fill Mem 0 (port->bytes in))
+;(memory-fill Mem 0 (port->bytes (open-input-file program-file)))
 
 ; execute program until PC is static
 ;(run (cons (memory-fill Mem 0 program) Reg) -1)
 
 (define myemu (new emu% 
-                   [mem (memory-fill Mem 0 program)]
+                   [mem (memory-fill Mem 0 (if (eq? program-file "")
+                                               program-display
+                                               (port->bytes (open-input-file program-file))))]
                    [reg Reg]))
 
 (define cpu-timer (new timer% [notify-callback (lambda ()(send myemu tick))]

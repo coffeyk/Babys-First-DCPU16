@@ -1,9 +1,12 @@
 #lang racket
 
+(require "util.rkt")
+
 (provide memory-read
          memory-write
          memory-fill
-         memory-pprint)
+         memory-pprint
+         memory-diff)
 
 ;(define Mem (make-immutable-hash))
 
@@ -53,13 +56,6 @@
                                    (rest vals)
                                    -1)]))]))
 
-(define (string-pad str width [pad #\space])
-  (define field-width (min width (string-length str)))
-  (define lmargin (- width field-width))
-  (string-append (build-string lmargin (lambda (x) pad))
-                 str))
-
-
 
 ;pprint format
 ;0x0000: 81a1 67ae 7dc1 0006 7dc1 0014 6411 7c01
@@ -67,64 +63,61 @@
 ;0x0010: 8402 0191 7dc1 0001 0020 0000 0000 0000
 ;0x8000: 0041 0042 0043 0044 0045 0046 0047 0048
 
-;print-addr-colum
-;zero-filler up to key-idx
-;print-value-string+
-;zero-filler?
-;new-line
+; new technique:
+; 1) filter keys into sorted list of populated row indexes
+; 2) build string for each row, ex:
+;      0x0008: 8000 0402 6421 7c11 0041 0812 0481 6401
+; 3) join rows together with newlines
 
-;no more keys - fill out row with zeros; return
-; gap? - fill in gap with zeros up to end of row; call again with last zero idx as last key
-; new row - print \n
-;         - print row info
-;         - fill in left zeros
-;         - prit value
-;         - call again with key as last key
+(define (memory-pprint mem (cols 8))
+  (define (pprint-line base-addr)
+    
+    (define (row-data key)
+      (map (lambda (x)
+             (hex-pad (memory-read mem x)))
+           (build-list cols (lambda (x)
+                              (+ x key)))))
+    
+    (string-append (row-header base-addr)
+                   (string-join (row-data base-addr) " ")))
+  
+  (define (rem-dups in [out '()])
+    (cond
+      [(empty? in)    out]
+      [(empty? out)   (rem-dups (cdr in) (list (car in)))]
+      [(eq? (car out)
+            (car in)) (rem-dups (cdr in) out)]
+      [else           (rem-dups (cdr in) (list* (car in) out))]))
+  
+  (define (addr-row addr)
+    (* (quotient addr cols) cols))
+  
+  (define (populated-rows addrs)
+    (rem-dups (map addr-row
+                   (sort addrs >))))
+  
+  (string-join (map pprint-line
+                    (populated-rows (hash-keys mem)))
+               "\n"))
 
+; see what changed from mem1->mem2
+(define (memory-diff mem1 mem2)
+  (define (helper keys1 keys2 diffs)
+    (if (empty? keys1)
+        (append keys2 diffs)
+        (let ([k1 (car keys1)]
+              [k2 (car keys2)])
+          (cond
+            [(> k1 k2) (helper keys1 (cdr keys2) (list* k2 diffs))]; k2 doesn't exist in keys1
+            [(eq? k1 k2) (if (= (memory-read mem1 k1)
+                                (memory-read mem2 k2))
+                             (helper (cdr keys1) (cdr keys2) diffs) ; no change
+                             (helper (cdr keys1) (cdr keys2) (list* k2 diffs)))]; change
+            [else (helper (cdr keys1) keys2 (list* k1 diffs))])))); k1 doesn't exist in keys2
+  (helper (sort (hash-keys mem1) <=)
+          (sort (hash-keys mem2) <=)
+          '()))
 
-(define (memory-pprint mem)
-  (define rows 8); rename cols to be accurate
-  
-  (define (hex-pad x)
-    (string-pad (format "~x" x) 4 #\0))
-  
-  (define (zero-filler x)
-    (string-join (list* "" (build-list x (lambda (x) (hex-pad 0)))) " "))
-  
-  (define (row-header key)
-    (string-append (hex-pad (- key (remainder key rows))) ":"))
-  
-  (define (pprint keys last-key out-str)
-    (let ([last-key-idx (remainder last-key rows)]
-          [last-key-row (quotient last-key rows)])
-      (if (empty? keys)
-          (string-append out-str
-                         (zero-filler (- rows last-key-idx 1))
-                         "\n"); pad out to end of line
-          (let* ([key (car keys)]
-                 [key-idx (remainder key rows)]
-                 [key-row (quotient key rows)]
-                 [value-string (hex-pad (memory-read mem key))])
-            (cond 
-              [(not (eq? key-row last-key-row))
-               (pprint (cdr keys) key (string-append out-str
-                                                     (zero-filler (- rows last-key-idx 1))
-                                                     "\n"
-                                                     (row-header key)
-                                                     (zero-filler (max 0 (- key-idx 0)))
-                                                     " "
-                                                     value-string))]
-              [(< 1 (- key-idx last-key-idx))
-               (pprint keys (- key 1) (string-append out-str
-                                                     " "
-                                                     (zero-filler (- key-idx last-key-idx 1))
-                                                     ))]
-              [else
-               (pprint (cdr keys) key (string-append out-str
-                                                     " "
-                                                     value-string))])))))
-  
-  (pprint (sort (hash-keys mem) <) 1  (row-header 0)))
 ;
 ;(define program (list #x7c01 #x0030 #x7de1 #x1000 #x0020 #x7803 #x1000 #xc00d
 ;                      #x7dc1 #x001a #xa861 #x7c01 #x2000 #x2161 #x2000 #x8463

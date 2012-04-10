@@ -1,5 +1,7 @@
 #lang racket
 
+(require "util.rkt")
+
 (provide build-reg
          reg-name
          reg-id
@@ -51,22 +53,15 @@
     (map reg-write-helper reg)))
 
 (define (reg-read reg r)
-  (cdr (assoc (reg-name r) reg)))
+  (bitwise-and (cdr (assoc (reg-name r) reg))
+               #xffff))
+  
 
 (define (reg-inc reg r-id)
   (reg-write reg r-id (+ 1 (reg-read reg r-id))))
 
 (define (reg-dec reg r-id)
   (reg-write reg r-id (- (reg-read reg r-id) 1)))
-
-(define (string-pad str width [pad #\space])
-  (define field-width (min width (string-length str)))
-  (define lmargin (- width field-width))
-  (string-append (build-string lmargin (lambda (x) pad))
-                 str))
-
-(define (hex-pad x)
-  (string-pad (format "~x" x) 4 #\0))
 
 (define (reg-pprint reg)
   (let pprint ([l reg]
@@ -76,7 +71,8 @@
         (pprint (cdr l) (string-append out-str
                                        (string-pad (format "~a" (caar l)) 5)
                                        ":"
-                                       (hex-pad (cdar l))
+                                       (hex-pad (bitwise-and (cdar l)
+                                                             #xffff))
                                        "\n")))))
                                         
                                         

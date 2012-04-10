@@ -3,7 +3,8 @@
 (require "registers.rkt") ; new list based registers
 (require "memory.rkt")
 
-(provide step-cpu)
+(provide step-cpu
+         calc-instruction-size)
 
 (struct instruction
   (opcode
@@ -523,8 +524,11 @@
 (define (step-cpu mem reg)
   (let* ([oplist (read-next-instruction mem reg)]
          [var-count (length (instruction-var-list oplist))])
-    (printf "~s\n" (instruction-opcode oplist))
+    (printf "\n~s\n" (instruction-opcode oplist))
     (parse-vars oplist
                 var-count ; number of params
                 mem
                 (reg-inc reg 'PC))))
+
+(define (calc-instruction-size mem adr)
+  (isr-size (instruction-var-list (hex->instruction (memory-read mem adr)))))
