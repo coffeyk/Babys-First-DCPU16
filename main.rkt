@@ -63,7 +63,7 @@
                        [label "Run"]
                        ; Callback procedure for a button click:
                        (callback (lambda (button event)
-                                   (send cpu-timer start 100)))))
+                                   (send cpu-timer start 0)))))
 (define step-buton (new button% [parent buton-panel]
                         [label "Step"]
                         ; Callback procedure for a button click:
@@ -74,6 +74,11 @@
                         ; Callback procedure for a button click:
                         (callback (lambda (button event)
                                     (send cpu-timer stop)))))
+(define fast-buton (new button% [parent buton-panel]
+                        [label "Fast"]
+                        ; Callback procedure for a button click:
+                        (callback (lambda (button event)
+                                    (send myemu f-tick)))))
 
 (define load-buton (new button% [parent buton-panel]
                         [label "LOAD"]
@@ -205,7 +210,30 @@
                  (define mem-dif-list (memory-diff current-mem (car mem-reg)))
                  (set! current-mem (car mem-reg))
                  (set! current-reg (cdr mem-reg))
-                 (refresh mem-dif-list))))
+                 (refresh mem-dif-list))
+               
+               (define/public (f-step)
+                 (define mem-reg (step-cpu current-mem current-reg))
+                 (set! current-mem (car mem-reg))
+                 (set! current-reg (cdr mem-reg)))
+               
+               (define/public (f-tick)
+                 ;(define mem-reg (step-cpu current-mem current-reg))
+                 ;(define mem-dif-list (memory-diff current-mem (car mem-reg)))
+                 ;(set! current-mem (car mem-reg))
+                 ;(set! current-reg (cdr mem-reg))
+                 (define (i x)
+                   (if (= x 0)
+                       (refresh)
+                       (begin
+                       (f-step)
+                       (i (- x 1)))))
+                 (i 1000000)
+                 ;(map (lambda (x)
+;                        (f-step))
+;                      (build-list 1000 values))
+;                 (refresh))))
+                 )))
 
 ; calls step-cpu until the 'PC stops changing
 (define (run mem-reg oldpc)
@@ -250,7 +278,7 @@
 
 (define myemu (new emu% 
                    [mem (memory-fill Mem 0 (if (eq? program-file "")
-                                               program-display
+                                               program
                                                (port->bytes (open-input-file program-file))))]
                    [reg Reg]))
 
