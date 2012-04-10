@@ -99,7 +99,6 @@
           [last-key-row (quotient last-key rows)])
       (if (empty? keys)
           (string-append out-str
-                         ;" %"
                          (zero-filler (- rows last-key-idx 1))
                          "\n"); pad out to end of line
           (let* ([key (car keys)]
@@ -114,20 +113,15 @@
                                                      (row-header key)
                                                      (zero-filler (max 0 (- key-idx 0)))
                                                      " "
-                                                     ; (hex-pad (memory-read mem key))))]
                                                      value-string))]
               [(< 1 (- key-idx last-key-idx))
                (pprint keys (- key 1) (string-append out-str
                                                      " "
                                                      (zero-filler (- key-idx last-key-idx 1))
-                                                     ;" "
-                                                     ;(hex-pad (memory-read mem key))))])))))
-                                                     ;(hex-pad key)))
                                                      ))]
               [else
                (pprint (cdr keys) key (string-append out-str
                                                      " "
-                                                     ;(hex-pad (memory-read mem key))))])))))
                                                      value-string))])))))
   
   (pprint (sort (hash-keys mem) <) 1  (row-header 0)))

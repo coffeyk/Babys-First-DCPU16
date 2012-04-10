@@ -2,17 +2,26 @@
 
 (require racket/cmdline)
 (require racket/gui/base)
+(require srfi/13)
 
 (require "cpu.rkt")
 (require "memory.rkt")
 (require "registers.rkt")
 
-
-
+(define rows 8)
+;(define (string-pad str width [pad #\space])
+;  (define field-width (min width (string-length str)))
+;  (define lmargin (- width field-width))
+;  (string-append (build-string lmargin (lambda (x) pad))
+;                 str))
+(define (hex-pad x)
+  (string-pad (format "~x" x) 4 #\0))
+(define (row-header key)
+  (string-append (hex-pad (- key (remainder key rows))) ":"))
 
 
 ; Make a frame by instantiating the frame% class
-(define frame (new frame% [label "Example"]))
+(define frame (new frame% [label "Baby's First DCPU16"]))
 
 
 
@@ -58,12 +67,13 @@
                       [font (make-object font% 10 'modern)]
                       [min-width 100]
                       [min-height 500]))
-(define mem-text (new text-field% [parent text-panel]
-                      [label "mem"]
-                      [min-height 500]
-                      [min-width 500]
-                      [font (make-object font% 10 'modern)]))
 
+(define mem-canv-text (new text%))
+(define ed-canv (new editor-canvas% [parent text-panel]
+                     [min-width 400]
+                     [min-height 500]
+                     [style (list 'hide-hscroll)]
+                     [editor mem-canv-text]))
 
 ; Show the frame by calling its show method
 (send frame show #t)
@@ -73,8 +83,9 @@
                
                (define current-mem mem)
                (define current-reg reg)
-               (send reg-text set-value (reg-pprint current-reg))
-               (send mem-text set-value (memory-pprint current-mem))
+               
+               (refresh)
+               
                (super-new)
                
                (define/public (get-mem)
@@ -94,8 +105,19 @@
                
                
                (define/public (refresh)
-                 (send reg-text set-value (reg-pprint current-reg))
-                 (send mem-text set-value (memory-pprint current-mem)))
+                 (let ([memory-text (memory-pprint current-mem)]
+                       [pc (reg-read current-reg 'PC)])
+                   (send reg-text set-value (reg-pprint current-reg))
+                   (send mem-canv-text erase)
+                   (send mem-canv-text change-style (make-object style-delta% 'change-family 'modern))
+                   (send mem-canv-text insert memory-text )
+                   (let ([row-idx (string-contains memory-text (row-header pc))])
+                     (if row-idx
+                         (let ([offset (+ row-idx 6 (* (remainder pc 8)
+                                                       5))])
+                           (send mem-canv-text change-style (make-object style-delta% 'change-toggle-underline)
+                                 offset (+ 4 offset)))
+                         (void)))))
                
                (define/public (tick)
                  (define mem-reg (step-cpu current-mem current-reg))
