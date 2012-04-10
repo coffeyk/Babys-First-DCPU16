@@ -6,7 +6,7 @@
 (require "cpu.rkt")
 (require "memory.rkt")
 (require "registers.rkt")
-         
+
 
 
 
@@ -15,14 +15,50 @@
 (define frame (new frame% [label "Example"]))
 
 
-(define vert-panel (new horizontal-panel% [parent frame]))
 
-(define reg-text (new text-field% [parent vert-panel]
+
+(define buton-panel (new horizontal-panel% [parent frame]))
+
+(define run-buton (new button% [parent buton-panel]
+                       [label "Run"]
+                       ; Callback procedure for a button click:
+                       (callback (lambda (button event)
+                                   (send cpu-timer start 100)))))
+(define step-buton (new button% [parent buton-panel]
+                        [label "Step"]
+                        ; Callback procedure for a button click:
+                        (callback (lambda (button event)
+                                    (send cpu-timer start 0 #t)))))
+(define halt-buton (new button% [parent buton-panel]
+                        [label "Halt"]
+                        ; Callback procedure for a button click:
+                        (callback (lambda (button event)
+                                    (send cpu-timer stop)))))
+
+(define load-buton (new button% [parent buton-panel]
+                        [label "LOAD"]
+                        ; Callback procedure for a button click:
+                        (callback (lambda (button event)
+                                    (let ([fname (get-file)])
+                                      (if fname
+                                          (send myemu load-mem (port->bytes
+                                                                (open-input-file fname)))
+                                          (void)))))))
+
+(define reset-buton (new button% [parent buton-panel]
+                         [label "Reset"]
+                         ; Callback procedure for a button click:
+                         (callback (lambda (button event)
+                                     (send cpu-timer stop)
+                                     (send myemu reset-reg)))))
+
+(define text-panel (new horizontal-panel% [parent frame]))
+(define reg-text (new text-field% [parent text-panel]
                       [label "reg"]
                       [font (make-object font% 10 'modern)]
                       [min-width 100]
                       [min-height 500]))
-(define mem-text (new text-field% [parent vert-panel]
+(define mem-text (new text-field% [parent text-panel]
                       [label "mem"]
                       [min-height 500]
                       [min-width 500]
@@ -37,20 +73,35 @@
                
                (define current-mem mem)
                (define current-reg reg)
+               (send reg-text set-value (reg-pprint current-reg))
+               (send mem-text set-value (memory-pprint current-mem))
                (super-new)
                
                (define/public (get-mem)
                  current-mem)
+               
+               (define/public (load-mem program)
+                 (set! current-mem (memory-fill (make-immutable-hash) 0 program))
+                 (refresh))
+               
+               
                (define/public (get-reg)
                  current-reg)
+               
+               (define/public (reset-reg)
+                 (set! current-reg (build-reg))
+                 (refresh))
+               
+               
+               (define/public (refresh)
+                 (send reg-text set-value (reg-pprint current-reg))
+                 (send mem-text set-value (memory-pprint current-mem)))
                
                (define/public (tick)
                  (define mem-reg (step-cpu current-mem current-reg))
                  (set! current-mem (car mem-reg))
                  (set! current-reg (cdr mem-reg))
-                 (send reg-text set-value (reg-pprint current-reg))
-                 (send mem-text set-value (memory-pprint current-mem))
-                 (display current-mem))))
+                 (refresh))))
 
 ; calls step-cpu until the 'PC stops changing
 (define (run mem-reg oldpc)
@@ -93,6 +144,6 @@
                    [mem (memory-fill Mem 0 program)]
                    [reg Reg]))
 
-(new timer% [notify-callback (lambda ()(send myemu tick))]
-     [interval 100]
-     [just-once? #f])
+(define cpu-timer (new timer% [notify-callback (lambda ()(send myemu tick))]
+                       [interval #f]
+                       [just-once? #f]))
