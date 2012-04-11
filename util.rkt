@@ -4,7 +4,8 @@
 
 (provide string-pad
          hex-pad
-         row-header)
+         row-header
+         in-between)
 
 (define (hex-pad x (width 4))
   (string-pad (format "~x" x) width #\0))
@@ -13,3 +14,7 @@
   (string-append "0x"
                  (hex-pad (- key (remainder key cols)))
                  ": "))
+
+(define (in-between a v b)
+  (and (<= a v)
+       (<= v b)))

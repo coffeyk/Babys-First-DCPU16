@@ -184,7 +184,8 @@
                         [pc (reg-read current-reg 'PC)]
                         [sp (reg-read current-reg 'SP)]
                         [paadr (reg-read current-reg 'Paadr)]
-                        [i-size (calc-instruction-size current-mem pc)])
+                        [hex (memory-read current-mem pc)]
+                        [i-size (calc-instruction-size hex)])
                    (send reg-text set-value (reg-pprint current-reg))
                    (send mem-canv-text erase)
                    (send mem-canv-text change-style (make-object style-delta% 'change-family 'modern))

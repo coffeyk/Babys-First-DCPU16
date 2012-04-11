@@ -9,7 +9,8 @@
          reg-write
          reg-inc
          reg-dec
-         reg-pprint)
+         reg-pprint
+         reg-add)
 
 ;; a-list of registers and initial values
 (define (build-reg)
@@ -58,10 +59,18 @@
   
 
 (define (reg-inc reg r-id)
-  (reg-write reg r-id (+ 1 (reg-read reg r-id))))
+  (reg-write reg r-id (+ (reg-read reg r-id) 1)))
 
 (define (reg-dec reg r-id)
   (reg-write reg r-id (- (reg-read reg r-id) 1)))
+
+; adds clks to the 'CLK register
+; clock-cycle -> register
+(define (reg-add reg r-id val)
+  (let ([old-val (reg-read reg r-id)])
+    (reg-write reg
+               r-id
+               (+ old-val val))))
 
 (define (reg-pprint reg)
   (let pprint ([l reg]
